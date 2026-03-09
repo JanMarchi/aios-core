@@ -2,24 +2,27 @@
 
 const {
   CodeIntelClient,
-} = require('../../.aios-core/core/code-intel/code-intel-client');
+} = require('../../.aiox-core/core/code-intel/code-intel-client');
 const {
   CodeIntelEnricher,
-} = require('../../.aios-core/core/code-intel/code-intel-enricher');
+} = require('../../.aiox-core/core/code-intel/code-intel-enricher');
 const {
   isCodeIntelAvailable,
   enrichWithCodeIntel,
   getClient,
   _resetForTesting,
-} = require('../../.aios-core/core/code-intel');
+} = require('../../.aiox-core/core/code-intel');
 
 describe('Fallback Graceful (AC4, NFR-1, NFR-4)', () => {
   describe('CodeIntelClient without provider', () => {
     let client;
 
     beforeEach(() => {
-      // No mcpCallFn = no provider available
-      client = new CodeIntelClient();
+      // No mcpCallFn AND no registry = no provider available
+      // Must explicitly disable RegistryProvider by pointing to non-existent registry
+      client = new CodeIntelClient({
+        registryPath: '/non/existent/registry.yaml',
+      });
     });
 
     it('should return false for isCodeIntelAvailable', () => {
@@ -85,7 +88,10 @@ describe('Fallback Graceful (AC4, NFR-1, NFR-4)', () => {
     let enricher;
 
     beforeEach(() => {
-      const client = new CodeIntelClient(); // no provider
+      // No mcpCallFn AND no registry = no provider available
+      const client = new CodeIntelClient({
+        registryPath: '/non/existent/registry.yaml',
+      });
       enricher = new CodeIntelEnricher(client);
     });
 
@@ -204,7 +210,7 @@ describe('Fallback Graceful (AC4, NFR-1, NFR-4)', () => {
   describe('Regression: existing tasks not broken (NFR-4)', () => {
     it('should be possible to require the module without errors', () => {
       expect(() => {
-        require('../../.aios-core/core/code-intel');
+        require('../../.aiox-core/core/code-intel');
       }).not.toThrow();
     });
 

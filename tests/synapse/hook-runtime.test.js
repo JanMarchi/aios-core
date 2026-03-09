@@ -7,7 +7,7 @@ const path = require('path');
 const {
   resolveHookRuntime,
   buildHookOutput,
-} = require('../../.aios-core/core/synapse/runtime/hook-runtime');
+} = require('../../.aiox-core/core/synapse/runtime/hook-runtime');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hook-runtime-'));
@@ -39,11 +39,11 @@ describe('hook-runtime', () => {
       fs.mkdirSync(path.join(cwd, '.synapse', 'sessions'), { recursive: true });
 
       writeFile(
-        path.join(cwd, '.aios-core/core/synapse/session/session-manager.js'),
-        "module.exports = { loadSession: () => ({ prompt_count: 7, id: 's-1' }) };",
+        path.join(cwd, '.aiox-core/core/synapse/session/session-manager.js'),
+        "module.exports = { loadSession: () => ({ prompt_count: 7, id: 's-1' }), cleanStaleSessions: () => 0 };",
       );
       writeFile(
-        path.join(cwd, '.aios-core/core/synapse/engine.js'),
+        path.join(cwd, '.aiox-core/core/synapse/engine.js'),
         [
           'class SynapseEngine {',
           '  constructor(synapsePath) {',
@@ -64,15 +64,113 @@ describe('hook-runtime', () => {
     }
   });
 
+  it('calls cleanStaleSessions on first prompt (prompt_count === 0)', () => {
+    const cwd = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(cwd, '.synapse', 'sessions'), { recursive: true });
+
+      // Mock session-manager with prompt_count: 0 and trackable cleanStaleSessions
+      let cleanupCalled = false;
+      writeFile(
+        path.join(cwd, '.aiox-core/core/synapse/session/session-manager.js'),
+        [
+          'let called = false;',
+          'module.exports = {',
+          "  loadSession: () => ({ prompt_count: 0, id: 'new-session' }),",
+          '  cleanStaleSessions: (dir, ttl) => { called = true; return 0; },',
+          '  _wasCalled: () => called,',
+          '};',
+        ].join('\n'),
+      );
+      writeFile(
+        path.join(cwd, '.aiox-core/core/synapse/engine.js'),
+        [
+          'class SynapseEngine { constructor(sp) { this.synapsePath = sp; } }',
+          'module.exports = { SynapseEngine };',
+        ].join('\n'),
+      );
+
+      // Clear require cache for the mock
+      const smPath = path.join(cwd, '.aiox-core', 'core', 'synapse', 'session', 'session-manager.js');
+      const engPath = path.join(cwd, '.aiox-core', 'core', 'synapse', 'engine.js');
+      delete require.cache[require.resolve(smPath)];
+      delete require.cache[require.resolve(engPath)];
+
+      const result = resolveHookRuntime({ cwd, sessionId: 'new-session' });
+      expect(result).toBeTruthy();
+
+      // Verify cleanup was called
+      const sm = require(smPath);
+      expect(sm._wasCalled()).toBe(true);
+
+      // Clean require cache
+      delete require.cache[require.resolve(smPath)];
+      delete require.cache[require.resolve(engPath)];
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT call cleanStaleSessions when prompt_count > 0', () => {
+    const cwd = makeTempDir();
+    try {
+      fs.mkdirSync(path.join(cwd, '.synapse', 'sessions'), { recursive: true });
+
+      writeFile(
+        path.join(cwd, '.aiox-core/core/synapse/session/session-manager.js'),
+        [
+          'let called = false;',
+          'module.exports = {',
+          "  loadSession: () => ({ prompt_count: 5, id: 'existing' }),",
+          '  cleanStaleSessions: () => { called = true; return 0; },',
+          '  _wasCalled: () => called,',
+          '};',
+        ].join('\n'),
+      );
+      writeFile(
+        path.join(cwd, '.aiox-core/core/synapse/engine.js'),
+        [
+          'class SynapseEngine { constructor(sp) { this.synapsePath = sp; } }',
+          'module.exports = { SynapseEngine };',
+        ].join('\n'),
+      );
+
+      const smPath = path.join(cwd, '.aiox-core', 'core', 'synapse', 'session', 'session-manager.js');
+      const engPath = path.join(cwd, '.aiox-core', 'core', 'synapse', 'engine.js');
+      delete require.cache[require.resolve(smPath)];
+      delete require.cache[require.resolve(engPath)];
+
+      const result = resolveHookRuntime({ cwd, sessionId: 'existing' });
+      expect(result).toBeTruthy();
+
+      const sm = require(smPath);
+      expect(sm._wasCalled()).toBe(false);
+
+      delete require.cache[require.resolve(smPath)];
+      delete require.cache[require.resolve(engPath)];
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('builds normalized hook output for xml and falsy values', () => {
     expect(buildHookOutput('<xml/>')).toEqual({
-      hookSpecificOutput: { additionalContext: '<xml/>' },
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: '<xml/>',
+      },
     });
     expect(buildHookOutput('')).toEqual({
-      hookSpecificOutput: { additionalContext: '' },
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: '',
+      },
     });
     expect(buildHookOutput(null)).toEqual({
-      hookSpecificOutput: { additionalContext: '' },
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: '',
+      },
     });
   });
 });

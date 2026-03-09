@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// SYN-14: Boot time captured before ANY require — measures hook cold start
-const _BOOT_TIME = process.hrtime.bigint();
 'use strict';
 
 /**
@@ -11,7 +9,6 @@ const _BOOT_TIME = process.hrtime.bigint();
  *
  * - Silent exit on missing .synapse/ directory
  * - Silent exit on any error (never blocks the user prompt)
- * - All errors logged to stderr with [synapse-hook] prefix
  * - 5s safety timeout as defense-in-depth
  *
  * @module synapse-engine-hook
@@ -19,7 +16,7 @@ const _BOOT_TIME = process.hrtime.bigint();
 
 const path = require('path');
 const { resolveHookRuntime, buildHookOutput } = require(
-  path.join(__dirname, '..', '..', '.aios-core', 'core', 'synapse', 'runtime', 'hook-runtime.js'),
+  path.join(__dirname, '..', '..', '.aiox-core', 'core', 'synapse', 'runtime', 'hook-runtime.js'),
 );
 
 /** Safety timeout (ms) — defense-in-depth; Claude Code also manages hook timeout. */
@@ -49,7 +46,45 @@ async function main() {
   if (!runtime) return;
 
   const result = await runtime.engine.process(input.prompt, runtime.session);
-  process.stdout.write(JSON.stringify(buildHookOutput(result.xml)));
+
+  // QW-1: Wire updateSession() — persist bracket transitions after each prompt
+  if (runtime.sessionId && runtime.sessionsDir) {
+    try {
+      const { updateSession } = require(
+        path.join(runtime.cwd, '.aiox-core', 'core', 'synapse', 'session', 'session-manager.js'),
+      );
+      updateSession(runtime.sessionId, runtime.sessionsDir, {
+        context: { last_bracket: result.bracket || 'FRESH' },
+      });
+    } catch (_err) {
+      // Fire-and-forget — never block the prompt
+    }
+  }
+
+  const output = JSON.stringify(buildHookOutput(result.xml));
+
+  // Write output robustly across real process.stdout and mocked Jest streams.
+  // Some mocks return boolean but never invoke callback; handle both patterns.
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    };
+
+    try {
+      const flushed = process.stdout.write(output, (err) => finish(err));
+      if (flushed) {
+        setImmediate(() => finish());
+      } else if (typeof process.stdout.once === 'function') {
+        process.stdout.once('drain', () => finish());
+      }
+    } catch (err) {
+      finish(err);
+    }
+  });
 }
 
 /**
@@ -65,10 +100,12 @@ function safeExit(code) {
 function run() {
   const timer = setTimeout(() => safeExit(0), HOOK_TIMEOUT_MS);
   timer.unref();
-  main().catch((err) => {
-    console.error(`[synapse-hook] ${err.message}`);
-    safeExit(0);
-  });
+  main()
+    .then(() => safeExit(0))
+    .catch(() => {
+      // Silent exit — stderr output triggers "hook error" in Claude Code UI
+      safeExit(0);
+    });
 }
 
 if (require.main === module) run();
